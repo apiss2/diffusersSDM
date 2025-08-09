@@ -1,4 +1,5 @@
 import argparse
+import copy
 from pathlib import Path
 
 import torch
@@ -10,6 +11,16 @@ from tqdm import tqdm
 
 from src.data import SDMDataset
 from src.model import SDMUNet
+
+
+def update_ema(ema_model: torch.nn.Module, model: torch.nn.Module, decay: float) -> None:
+    """Update exponential moving average of model weights."""
+    ema_params = dict(ema_model.named_parameters())
+    model_params = dict(model.named_parameters())
+    for name, param in model_params.items():
+        ema_params[name].data.mul_(decay).add_(param.data, alpha=1 - decay)
+    for ema_buf, buf in zip(ema_model.buffers(), model.buffers()):
+        ema_buf.copy_(buf)
 
 
 def main(args):
@@ -56,6 +67,11 @@ def main(args):
         use_scale_shift_norm=True,
     ).to(device)
 
+    ema_unet = copy.deepcopy(unet).to(device)
+    ema_unet.eval()
+    for p in ema_unet.parameters():
+        p.requires_grad_(False)
+
     opt = torch.optim.AdamW(unet.parameters(), lr=args.lr)
     noise_scheduler = DDPMScheduler(1000, beta_schedule="squaredcos_cap_v2")
     use_autocast = device.type == "cuda" and prec in ["fp16", "bf16"]
@@ -93,10 +109,11 @@ def main(args):
                 torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
                 opt.step()
 
+            update_ema(ema_unet, unet, args.ema_decay)
             pbar.set_description_str(f"Epoch[{epoch:06d}] loss {loss.item():.4f}")
 
         # サンプル出力
-        unet.eval()
+        ema_unet.eval()
         with (
             torch.no_grad(),
             autocast(device_type=device.type, dtype=amp_dtype, enabled=use_autocast),
@@ -108,7 +125,7 @@ def main(args):
                 noise_scheduler.config.num_train_timesteps - 1, -1, -1, device=device
             )
             for tt in timesteps:
-                pred = unet(x, tt.expand(b), seg_vis)
+                pred = ema_unet(x, tt.expand(b), seg_vis)
                 x = noise_scheduler.step(pred, tt, x).prev_sample
             imgs = (x.clamp(-1, 1) + 1) / 2
             save_image(imgs, out_dir / f"sample/sample_epoch{epoch:06d}.png", nrow=2)
@@ -116,7 +133,9 @@ def main(args):
         # 指定エポック毎にモデル保存
         if epoch % args.log_every == 0:
             torch.save(unet.state_dict(), out_dir / f"unet_sdm_epoch{epoch:06d}.pt")
+            torch.save(ema_unet.state_dict(), out_dir / f"unet_sdm_ema_epoch{epoch:06d}.pt")
         unet.train()
+        ema_unet.eval()
 
     print("done.")
 
@@ -137,5 +156,6 @@ if __name__ == "__main__":
     p.add_argument("--log_every", type=int, default=1)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--precision", choices=["fp32", "fp16", "bf16"], default="bf16")
+    p.add_argument("--ema_decay", type=float, default=0.999, help="EMA decay rate")
     args = p.parse_args()
     main(args)
