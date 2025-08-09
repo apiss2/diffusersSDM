@@ -145,6 +145,29 @@ class ResBlock(nn.Module):
         return self.skip(x) + h
 
 
+class AttentionBlock(nn.Module):
+    def __init__(self, channels, num_heads=4):
+        super().__init__()
+        self.num_heads = num_heads
+        self.norm = nn.GroupNorm(32, channels)
+        self.qkv = nn.Conv2d(channels, channels * 3, 1)
+        self.proj_out = nn.Conv2d(channels, channels, 1)
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        qkv = self.qkv(self.norm(x))
+        q, k, v = qkv.chunk(3, dim=1)
+        q = q.reshape(b, self.num_heads, c // self.num_heads, h * w).permute(0, 1, 3, 2)
+        k = k.reshape(b, self.num_heads, c // self.num_heads, h * w).permute(0, 1, 3, 2)
+        v = v.reshape(b, self.num_heads, c // self.num_heads, h * w).permute(0, 1, 3, 2)
+        attn = torch.matmul(q, k.transpose(-1, -2)) * (c // self.num_heads) ** -0.5
+        attn = attn.softmax(dim=-1)
+        out = torch.matmul(attn, v)
+        out = out.permute(0, 1, 3, 2).reshape(b, c, h, w)
+        out = self.proj_out(out)
+        return x + out
+
+
 class SDMUNet(nn.Module):
     """
     diffusers互換のSDM UNet:
@@ -172,17 +195,35 @@ class SDMUNet(nn.Module):
         ch = base_channels
         emb_ch = base_channels * 4
 
-        # Down
+        # Down (SPADE)
         self.down_blocks = nn.ModuleList()
         self.down_chs = [ch]
         for i, mult in enumerate(channel_mult):
             out_ch = base_channels * mult
             for _ in range(num_res_blocks):
-                self.down_blocks.append(ResBlock(ch, emb_ch, out_ch, dropout))
+                self.down_blocks.append(
+                    SDMResBlock(
+                        ch,
+                        emb_ch,
+                        out_channels=out_ch,
+                        c_channels=num_classes,
+                        dropout=dropout,
+                        use_scale_shift_norm=use_scale_shift_norm,
+                    )
+                )
                 ch = out_ch
                 self.down_chs.append(ch)
             if i != len(channel_mult) - 1:
-                self.down_blocks.append(ResBlock(ch, emb_ch, ch, dropout, down=True))
+                self.down_blocks.append(
+                    SDMResBlock(
+                        ch,
+                        emb_ch,
+                        c_channels=num_classes,
+                        dropout=dropout,
+                        use_scale_shift_norm=use_scale_shift_norm,
+                        down=True,
+                    )
+                )
                 self.down_chs.append(ch)
 
         # Middle (SPADE)
@@ -193,6 +234,7 @@ class SDMUNet(nn.Module):
             dropout=dropout,
             use_scale_shift_norm=use_scale_shift_norm,
         )
+        self.mid_attn = AttentionBlock(ch)
         self.mid_block2 = SDMResBlock(
             ch,
             emb_ch,
@@ -248,24 +290,18 @@ class SDMUNet(nn.Module):
         h = self.in_conv(x)
         skips = [h]
         for blk in self.down_blocks:
-            if isinstance(blk, ResBlock):
-                h = blk(h, emb)
-            else:
-                h = blk(h, emb)  # no seg in down
+            h = blk(h, self._downseg(seg, h), emb)
             skips.append(h)
 
         h = self.mid_block1(h, self._downseg(seg, h), emb)
+        h = self.mid_attn(h)
         h = self.mid_block2(h, self._downseg(seg, h), emb)
 
         for blk in self.up_blocks:
-            if isinstance(blk, SDMResBlock):
-                if "SDMResBlock" in blk.__class__.__name__ and blk.up is False:
-                    # concat skip
-                    skip = skips.pop()
-                    h = torch.cat([h, skip], dim=1)
-                h = blk(h, self._downseg(seg, h), emb)
-            else:
-                h = blk(h, emb)
+            if blk.up is False:
+                skip = skips.pop()
+                h = torch.cat([h, skip], dim=1)
+            h = blk(h, self._downseg(seg, h), emb)
 
         h = self.out_norm(h)
         h = self.out_act(h)
