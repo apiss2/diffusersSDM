@@ -8,6 +8,8 @@ from .gaussian_diffusion import (
 )
 from .respace import SpacedDiffusion, space_timesteps
 from .pipeline_semantic import SemanticDiffusionPipeline
+from .data import CelebAHQMaskDataset
+from .config import TrainingConfig, load_config
 
 __all__ = [
     "UNetModel",
@@ -21,4 +23,7 @@ __all__ = [
     "SpacedDiffusion",
     "space_timesteps",
     "SemanticDiffusionPipeline",
+    "CelebAHQMaskDataset",
+    "TrainingConfig",
+    "load_config",
 ]

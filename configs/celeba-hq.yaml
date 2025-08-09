@@ -1,0 +1,9 @@
+data_root: path/to/celeba_hq
+mask_root: path/to/celeba_hq_mask
+image_size: 256
+batch_size: 4
+num_classes: 19
+epochs: 1
+lr: 1e-4
+diffusion_steps: 1000
+schedule: linear

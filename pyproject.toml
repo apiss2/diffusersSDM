@@ -10,6 +10,10 @@ dependencies = [
     "torch==2.5.1",
     "torchvision==0.20.1",
     "transformers>=4.55.0",
+    "numpy",
+    "Pillow",
+    "pyyaml",
+    "tqdm",
 ]
 
 [project.urls]
