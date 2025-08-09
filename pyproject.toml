@@ -1,16 +1,15 @@
 [project]
-name = "sdm-diffusion"
+name = "diffuserssdm"
 version = "0.1.0"
 description = "Semantic Image Synthesis via Diffusion Models implemented with diffusers"
 authors = [{name = "AutoGPT"}]
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "torch",
-    "numpy",
-    "diffusers",
-    "Pillow",
-    "torchvision",
+    "diffusers>=0.34.0",
+    "torch==2.5.1",
+    "torchvision==0.20.1",
+    "transformers>=4.55.0",
 ]
 
 [project.urls]
